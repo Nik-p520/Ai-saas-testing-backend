@@ -1,22 +1,28 @@
 package com.nikhilpanwar.Ai_saas_testing.Test;
 
+import com.nikhilpanwar.Ai_saas_testing.service.sse.SseService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/api/test")
 public class TestController {
 
     private final TestService testService;
+    private final SseService sseService;
 
-    public TestController(TestService testService) {
+    public TestController(TestService testService, SseService sseService) {
         this.testService = testService;
+        this.sseService = sseService;
     }
 
-    // ✅ Helper to get Firebase UID
     private String getCurrentUserId() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.isAuthenticated() && !auth.getPrincipal().equals("anonymousUser")) {
@@ -26,11 +32,33 @@ public class TestController {
     }
 
     @PostMapping("/generate")
-    public ResponseEntity<TestResultDTO> generateTest(@RequestBody TestRequestDTO request) {
-        System.out.println("🚀 Test Generation Requested by: " + getCurrentUserId());
-        // Pass UserID to service if needed, or let service handle it
-        TestResultDTO resultDTO = testService.generateAndExecuteTest(request);
-        return ResponseEntity.ok(resultDTO);
+    public ResponseEntity<String> startTest(@RequestBody TestRequestDTO request) {
+        String userId = getCurrentUserId();
+        String testId = UUID.randomUUID().toString();
+
+        System.out.println("🚀 Test Request Received. ID: " + testId);
+
+        // Run Async
+        CompletableFuture.runAsync(() -> {
+            try {
+                // 🛑 CRITICAL FIX: Wait 2 seconds for Frontend to connect
+                // This prevents the "First Event Lost" issue
+                Thread.sleep(2000);
+
+                testService.generateAndExecuteTestAsync(testId, userId, request);
+            } catch (Exception e) {
+                sseService.sendError(testId, "Test failed to start: " + e.getMessage());
+            }
+        });
+
+        // Return ID immediately
+        return ResponseEntity.ok(testId);
+    }
+
+    @GetMapping(path = "/stream/{testId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamTestProgress(@PathVariable String testId) {
+        System.out.println("📡 Frontend Connected to Stream: " + testId);
+        return sseService.subscribe(testId);
     }
 
     @GetMapping("/result/{testId}")
@@ -40,21 +68,13 @@ public class TestController {
 
     @GetMapping("/results")
     public ResponseEntity<List<TestResultDTO>> getAllResults() {
-        String userId = getCurrentUserId();
-        System.out.println("📊 Fetching All Results for User: " + userId);
-
-        // Note: Tera Service shayad saare results la raha hai.
-        // Ideal way ye hai ki tu userId pass kare: testService.getAllTestResults(userId);
         return ResponseEntity.ok(testService.getAllTestResults());
     }
 
     @DeleteMapping("/delete/{testId}")
     public ResponseEntity<Void> deleteTestResult(@PathVariable String testId) {
-        boolean deleted = testService.deleteTestResult(testId);
-        if (deleted) {
-            return ResponseEntity.noContent().build();
-        } else {
-            return ResponseEntity.notFound().build();
-        }
+        return testService.deleteTestResult(testId)
+                ? ResponseEntity.noContent().build()
+                : ResponseEntity.notFound().build();
     }
 }

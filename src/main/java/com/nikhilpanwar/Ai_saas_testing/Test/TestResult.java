@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Entity
-@Table(name = "test_results")
+@Table(name = "test_results", indexes = @Index(name = "idx_user_id", columnList = "userId"))
 @Data
 @Builder
 @AllArgsConstructor
@@ -19,6 +19,9 @@ public class TestResult {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
+
+    @Column(nullable = false)
+    private String userId;
 
     @Column(nullable = false, length = 2048)
     private String websiteUrl;
@@ -55,6 +58,7 @@ public class TestResult {
 
     private LocalDateTime createdAt;
     private LocalDateTime completedAt;
+
 
     // ==================== EMBEDDED CLASSES ====================
 

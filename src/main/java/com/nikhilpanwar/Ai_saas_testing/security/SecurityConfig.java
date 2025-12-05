@@ -4,17 +4,11 @@ import com.nikhilpanwar.Ai_saas_testing.security.filter.FirebaseTokenFilter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.config.Customizer;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
-import java.util.Arrays;
-import java.util.List;
 
 @Configuration
 public class SecurityConfig {
@@ -26,33 +20,25 @@ public class SecurityConfig {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
-                // CORS ko yahan explicity enable kar rahe hain
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+
+                // ✅ Use Defaults: This looks for the 'corsConfigurationSource' bean in CorsConfig.java
+                .cors(Customizer.withDefaults())
+
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/api/public/**", "/error").permitAll() // Open endpoints
+                        .requestMatchers("/api/public/**", "/error").permitAll()
                         .requestMatchers("/ws/**").permitAll()
+
+                        // ✅ Allow SSE Stream without Auth (EventSource limitation)
+                        .requestMatchers("/api/test/stream/**").permitAll()
+
                         .requestMatchers("/api/user/**").authenticated()
-                        .requestMatchers("/api/dashboard/**").authenticated() // Secure endpoints
+                        .requestMatchers("/api/dashboard/**").authenticated()
                         .requestMatchers("/api/test/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(firebaseTokenFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
-    }
-
-    // ✅ CORS Configuration Bean yahi bana diya
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:4200")); // Angular URL
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
-        configuration.setAllowCredentials(true);
-
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
     }
 }

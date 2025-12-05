@@ -1,5 +1,6 @@
 package com.nikhilpanwar.Ai_saas_testing.Dashboard.Stats_Cards;
 
+import com.nikhilpanwar.Ai_saas_testing.Test.TestResult;
 import com.nikhilpanwar.Ai_saas_testing.Test.TestResultRepository;
 import com.nikhilpanwar.Ai_saas_testing.WebSocket.DashboardWebSocketController;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +22,7 @@ public class StatsService {
     @Autowired
     private DashboardWebSocketController ws;
 
+    // Helper to get current Firebase UID
     private String getCurrentUserId() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null && auth.isAuthenticated() && !auth.getPrincipal().equals("anonymousUser")) {
@@ -33,12 +35,17 @@ public class StatsService {
     // 📌 STATS (Current Snapshot)
     // ============================
     public StatsDTO getStats() {
-        long totalTests = testResultRepository.count();
-        long passedTests = testResultRepository.countPassedTests();
-        long activeTests = testResultRepository.countActiveTests();
+        String userId = getCurrentUserId(); // 1. User ID nikala
 
-        double totalSeconds = testResultRepository.findAll()
-                .stream()
+        // 2. Sirf user ka data fetch kiya (findAll ki jagah)
+        List<TestResult> userTests = testResultRepository.findByUserIdOrderByCreatedAtDesc(userId);
+
+        long totalTests = userTests.size(); // Count user ke list se nikala
+        long passedTests = testResultRepository.countPassedTests(userId);
+        long activeTests = testResultRepository.countActiveTests(userId);
+
+        // Calculate average time using only User's data
+        double totalSeconds = userTests.stream()
                 .mapToDouble(test -> convertDurationToSeconds(test.getDuration()))
                 .sum();
 
@@ -52,7 +59,8 @@ public class StatsService {
                 activeTests
         );
 
-        ws.broadcastStats(dto);
+        // ✅ FIX: Broadcast ki jagah sirf user ko send karo
+        ws.sendStatsToUser(userId, dto);
 
         return dto;
     }
@@ -90,7 +98,6 @@ public class StatsService {
     }
 
     // --- Helper classes for comparison logic ---
-    // Using double for totalTests to ensure precision during division
     private static class StatsPeriod {
         double totalTests;
         double averageTime;
@@ -107,58 +114,56 @@ public class StatsService {
     // 📌 COMPARISON LOGIC (Month vs Previous Month)
     // ============================
     public Map<String, String> getComparisonData() {
+        String userId = getCurrentUserId(); // User ID needed for comparisons
         LocalDate now = LocalDate.now();
 
-        // 1. Current Window: Last 30 Days (e.g., Nov 1 - Nov 30)
+        // 1. Current Window: Last 30 Days
         LocalDate currentStart = now.minusDays(29);
         LocalDate currentEnd = now;
 
-        // 2. Previous Window: The 30 days prior (e.g., Oct 2 - Oct 31)
+        // 2. Previous Window: The 30 days prior
         LocalDate prevStart = now.minusDays(59);
         LocalDate prevEnd = now.minusDays(30);
 
-        StatsPeriod current = calculatePeriodStats(currentStart, currentEnd);
-        StatsPeriod previous = calculatePeriodStats(prevStart, prevEnd);
+        // Pass userId to the calculation method
+        StatsPeriod current = calculatePeriodStats(userId, currentStart, currentEnd);
+        StatsPeriod previous = calculatePeriodStats(userId, prevStart, prevEnd);
 
         Map<String, String> comparisons = new HashMap<>();
 
-        // --- 1. Total Tests (% Change) ---
-        // Unit: "Tests". Output: "+10.0% Tests" (Green) or "-5.0% Tests" (Red)
         comparisons.put("totalTests", formatComparison(
                 current.totalTests,
                 previous.totalTests,
                 false, "Tests"));
 
-        // --- 2. Avg Test Time (Inverted) ---
-        // Unit: "s faster". Output: "+1.2s faster" (Green) or "-2.0s slower" (Red)
         comparisons.put("averageTime", formatComparison(
                 current.averageTime,
                 previous.averageTime,
                 true, "s faster"));
 
-        // --- 3. Success Rate (% Change) ---
-        // Unit: "better". Output: "+5.0% better" (Green) or "-4.0% worse" (Red)
         comparisons.put("successRate", formatComparison(
                 current.successRate,
                 previous.successRate,
                 false, "better"));
 
-        ws.broadcastComparisons(comparisons);
+        // ✅ FIX: Broadcast ki jagah sirf user ko send karo
+        ws.sendComparisonsToUser(userId, comparisons);
 
         return comparisons;
     }
 
     /**
-     * Fetches and calculates the stats for a specific time period.
+     * Fetches and calculates the stats for a specific time period AND User.
      */
-    private StatsPeriod calculatePeriodStats(LocalDate start, LocalDate end) {
+    private StatsPeriod calculatePeriodStats(String userId, LocalDate start, LocalDate end) {
         LocalDateTime startDateTime = start.atStartOfDay();
         LocalDateTime endDateTime = end.atTime(23, 59, 59);
 
-        long total = testResultRepository.countTestsBetween(startDateTime, endDateTime);
-        long passed = testResultRepository.countPassedTestsBetween(startDateTime, endDateTime);
+        // Updated Repository Calls with userId
+        long total = testResultRepository.countTestsBetween(userId, startDateTime, endDateTime);
+        long passed = testResultRepository.countPassedTestsBetween(userId, startDateTime, endDateTime);
 
-        List<String> durations = testResultRepository.findDurationsBetween(startDateTime, endDateTime);
+        List<String> durations = testResultRepository.findDurationsBetween(userId, startDateTime, endDateTime);
 
         if (durations == null) {
             durations = Collections.emptyList();
@@ -174,13 +179,7 @@ public class StatsService {
         return new StatsPeriod((double) total, avg, success);
     }
 
-    /**
-     * Formats the comparison string.
-     * Uses concatenation to strictly control spaces and signs.
-     */
     private String formatComparison(double current, double previous, boolean isAvgTime, String unit) {
-
-        // Handle no data history
         if (previous == 0 || previous == 0.0) {
             return (current > 0) ? "New Data" : "No Change";
         }
@@ -190,43 +189,22 @@ public class StatsService {
         double valueToFormat;
 
         if (isAvgTime) {
-            // --- AVG TEST TIME LOGIC (Inverted) ---
-            // Formula: Previous - Current
-            // Example 1: Prev(10s) - Curr(8s) = +2. (+ means Faster/Green)
-            // Example 2: Prev(10s) - Curr(12s) = -2. (- means Slower/Red)
-
             double difference = previous - current;
-
             sign = difference >= 0 ? "+" : "-";
-
-            // If Positive (Faster), use unit ("s faster").
-            // If Negative (Slower), use "s slower".
             description = difference >= 0 ? unit : "s slower";
-
             valueToFormat = Math.abs(difference);
-
-            // Output: +2.5s faster OR -1.2s slower
             return sign + String.format("%.1f", valueToFormat) + description;
 
         } else {
-            // --- TOTAL TESTS & SUCCESS RATE LOGIC (Standard) ---
-
             double percentageChange = ((current - previous) / previous) * 100;
-
             sign = percentageChange >= 0 ? "+" : "-";
             valueToFormat = Math.abs(percentageChange);
 
             if (unit.equals("Tests")) {
-                // For Total Tests, we just show % Tests (Direction is handled by sign/color)
                 description = "% " + unit;
             } else {
-                // For Success Rate: "better" vs "worse"
-                description = percentageChange >= 0
-                        ? "% " + unit    // e.g. % better
-                        : "% worse";     // e.g. % worse
+                description = percentageChange >= 0 ? "% " + unit : "% worse";
             }
-
-            // Output: +12.5% Tests OR -4.2% worse
             return sign + String.format("%.1f", valueToFormat) + description;
         }
     }
@@ -236,7 +214,10 @@ public class StatsService {
     // 📌 TRENDS (Last 7 days)
     // ============================
     public List<TrendDTO> getTestTrends() {
-        List<Object[]> results = testResultRepository.countTestsByDay();
+        String userId = getCurrentUserId(); // User ID
+
+        // Pass userId to repo
+        List<Object[]> results = testResultRepository.countTestsByDay(userId);
 
         Map<LocalDate, Long> trends = new HashMap<>();
 
@@ -263,7 +244,8 @@ public class StatsService {
                 ))
                 .toList();
 
-        ws.broadcastTrends(finalList);
+        // ✅ FIX: Broadcast ki jagah sirf user ko send karo
+        ws.sendTrendsToUser(userId, finalList);
 
         return finalList;
     }
@@ -273,9 +255,12 @@ public class StatsService {
     // 📌 DISTRIBUTION (Pie chart)
     // ============================
     public List<DistributionDTO> getDistribution() {
-        long passed = testResultRepository.countPassedTests();
-        long failed = testResultRepository.countFailedTests();
-        long processing = testResultRepository.countActiveTests();
+        String userId = getCurrentUserId(); // User ID
+
+        // Pass userId to all counts
+        long passed = testResultRepository.countPassedTests(userId);
+        long failed = testResultRepository.countFailedTests(userId);
+        long processing = testResultRepository.countActiveTests(userId);
 
         List<DistributionDTO> dtoList = Arrays.asList(
                 new DistributionDTO("Passed", passed),
@@ -283,7 +268,8 @@ public class StatsService {
                 new DistributionDTO("Processing", processing)
         );
 
-        ws.broadcastDistribution(dtoList);
+        // ✅ FIX: Broadcast ki jagah sirf user ko send karo
+        ws.sendDistributionToUser(userId, dtoList);
 
         return dtoList;
     }

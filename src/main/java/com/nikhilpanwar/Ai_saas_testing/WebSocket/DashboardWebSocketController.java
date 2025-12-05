@@ -2,33 +2,40 @@ package com.nikhilpanwar.Ai_saas_testing.WebSocket;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
-import org.springframework.stereotype.Controller; // Changed from @Component to @Controller
-import java.util.Map; // Required for the broadcastComparisons method
+import org.springframework.stereotype.Controller;
 
-@Controller // Using @Controller is standard for WebSocket message handlers
+@Controller
 @RequiredArgsConstructor
 public class DashboardWebSocketController {
 
     private final SimpMessagingTemplate messagingTemplate;
 
-    public void broadcastStats(Object stats) {
-        messagingTemplate.convertAndSend("/topic/stats", stats);
+    // ---------------------------------------------------------
+    // ✅ NEW STRATEGY: DYNAMIC TOPICS
+    // ---------------------------------------------------------
+
+    public void sendStatsToUser(String userId, Object stats) {
+        if (userId != null) {
+            // Address ban jayega: /topic/stats/AbCdEf12345
+            messagingTemplate.convertAndSend("/topic/stats/" + userId, stats);
+        }
     }
 
-    public void broadcastTrends(Object trends) {
-        messagingTemplate.convertAndSend("/topic/trends", trends);
+    public void sendTrendsToUser(String userId, Object trends) {
+        if (userId != null) {
+            messagingTemplate.convertAndSend("/topic/trends/" + userId, trends);
+        }
     }
 
-    public void broadcastDistribution(Object distribution) {
-        messagingTemplate.convertAndSend("/topic/distribution", distribution);
+    public void sendDistributionToUser(String userId, Object distribution) {
+        if (userId != null) {
+            messagingTemplate.convertAndSend("/topic/distribution/" + userId, distribution);
+        }
     }
 
-    /**
-     * ✅ FIX: This method resolves the "Cannot resolve method 'broadcastComparisons'" error.
-     * It broadcasts the comparison data (Map<String, String>) to a new WebSocket topic.
-     */
-    public void broadcastComparisons(Object comparisonData) {
-        // You should define a unique topic for the comparison data
-        messagingTemplate.convertAndSend("/topic/comparisons", comparisonData);
+    public void sendComparisonsToUser(String userId, Object comparisonData) {
+        if (userId != null) {
+            messagingTemplate.convertAndSend("/topic/comparisons/" + userId, comparisonData);
+        }
     }
 }
