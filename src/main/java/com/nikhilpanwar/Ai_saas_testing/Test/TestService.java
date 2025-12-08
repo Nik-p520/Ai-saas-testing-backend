@@ -11,7 +11,6 @@ import org.springframework.web.client.RestTemplate;
 import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.Base64;
 
 @Service
 @RequiredArgsConstructor
@@ -22,8 +21,7 @@ public class TestService {
     private final StatsService statsService;
     private final SseService sseService;
 
-    private static final String PYTHON_API_URL = "http://localhost:5000/generate-tests";
-    private static final String PYTHON_EXECUTE_URL = "http://localhost:5000/execute-tests";
+    private static final String PYTHON_FULL_AUDIT_URL = "http://localhost:5000/test-website";
     private static final Path SCREENSHOT_DIR = Paths.get("uploads/screenshots");
 
     private String getCurrentUserId() {
@@ -34,212 +32,152 @@ public class TestService {
         throw new RuntimeException("User is not authenticated");
     }
 
-    /**
-     * Call Python Flask AI service to generate Playwright script
-     */
-    public String generateScript(TestRequestDTO requestDTO) {
+    public void generateAndExecuteTestAsync(String streamId, String userId, TestRequestDTO requestDTO) {
+        System.out.println("🚀 Starting Async Test. Stream ID: " + streamId + " for URL: " + requestDTO.getUrl());
+
         try {
+            sseService.sendProgress(streamId, "Connecting to AI Agent...");
+            sseService.sendProgress(streamId, "Launching Cloud Browser & Generating User Journey...");
+
             Map<String, Object> request = new HashMap<>();
             request.put("url", requestDTO.getUrl());
-            request.put("test_requirements", requestDTO.getTestRequirements());
-            request.put("credentials", requestDTO.getCredentials());
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
-            ResponseEntity<GeneratedScriptDTO> response =
-                    restTemplate.postForEntity(PYTHON_API_URL, entity, GeneratedScriptDTO.class);
+            ResponseEntity<Map> response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, Map.class);
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                GeneratedScriptDTO dto = response.getBody();
-                return (dto.isSuccess() && dto.getTest_script() != null)
-                        ? dto.getTest_script()
-                        : "// ❌ AI generation failed: " + dto.getError();
-            } else {
-                return "// ❌ AI service returned non-2xx response";
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            return "// ⚠️ Error calling AI service: " + e.getMessage();
-        }
-    }
+                sseService.sendProgress(streamId, "AI Analysis Complete. Saving Report...");
+                Map<String, Object> body = response.getBody();
 
-    /**
-     * ASYNC Method for Real-Time Updates
-     */
-    public void generateAndExecuteTestAsync(String streamId, String userId, TestRequestDTO requestDTO) {
-        System.out.println("🚀 Starting Async Test. Stream ID: " + streamId + " for URL: " + requestDTO.getUrl());
+                // ✅ UPDATED LOGIC HERE: Status depends ONLY on execution success
+                Boolean success = (Boolean) body.getOrDefault("success", false);
+                String finalStatus = Boolean.TRUE.equals(success) ? "passed" : "failed";
 
-        try {
-            // STEP 1: GENERATION
-            sseService.sendProgress(streamId, "Analyzing requirements & Generating AI Script...");
-            String script = generateScript(requestDTO);
+                // ✅ UPDATE: Extract duration sent by Python
+                String duration = (String) body.getOrDefault("duration", "0s");
 
-            // Handle Generation Failure
-            if (script.startsWith("//")) {
-                sseService.sendProgress(streamId, "❌ Script generation failed. Finalizing...");
+                List<String> logs = extractStringList(body, "logs");
 
-                TestResult failed = TestResult.builder()
-                        // 🛑 REMOVED .id(streamId) -> Let DB generate the ID
-                        .userId(userId)
-                        .websiteUrl(requestDTO.getUrl())
-                        .status("failed")
-                        .executionTime(LocalDateTime.now())
-                        .createdAt(LocalDateTime.now())
-                        .script(script)
-                        .logs(List.of("Script generation failed"))
-                        .build();
-
-                TestResult savedFailed = testRepository.save(failed);
-
-                // Send the result with the NEW DB generated ID
-                sseService.sendResult(streamId, convertToDTO(savedFailed));
-                return;
-            }
-
-            // STEP 2: EXECUTION
-            sseService.sendProgress(streamId, "Script Generated. Launching Cloud Browser...");
-            Thread.sleep(500);
-            sseService.sendProgress(streamId, "Executing Test Script (this may take a moment)...");
-
-            List<String> logs = new ArrayList<>();
-            List<TestResult.BugItem> bugs = new ArrayList<>();
-            List<TestResult.Recommendation> recommendations = new ArrayList<>();
-            List<TestResult.Screenshot> screenshots = new ArrayList<>();
-            String status = "failed";
-            String duration = "0s";
-            String browser = "chromium";
-
-            try {
-                HttpHeaders headers = new HttpHeaders();
-                headers.setContentType(MediaType.APPLICATION_JSON);
-                Map<String, Object> execRequest = new HashMap<>();
-                execRequest.put("test_script", script);
-                execRequest.put("url", requestDTO.getUrl());
-                HttpEntity<Map<String, Object>> entity = new HttpEntity<>(execRequest, headers);
-
-                ResponseEntity<Map> response =
-                        restTemplate.postForEntity(PYTHON_EXECUTE_URL, entity, Map.class);
-
-                sseService.sendProgress(streamId, "Processing Results & Screenshots...");
-
-                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                    Map<String, Object> execution = response.getBody();
-                    Boolean success = (Boolean) execution.get("success");
-                    status = (String) execution.getOrDefault("status", (success != null && success) ? "passed" : "failed");
-                    logs = extractStringList(execution, "logs");
-                    duration = (String) execution.getOrDefault("duration", "0s");
-                    browser = (String) execution.getOrDefault("browser", "chromium");
-
-                    // Extract Bugs
-                    List<Map<String, Object>> bugList = (List<Map<String, Object>>) execution.get("bugs");
-                    if (bugList != null) {
-                        for (Map<String, Object> b : bugList) {
-                            bugs.add(TestResult.BugItem.builder()
-                                    .bugId((String) b.getOrDefault("bugId", UUID.randomUUID().toString()))
-                                    .title((String) b.getOrDefault("title", "Unknown Bug"))
-                                    .description((String) b.getOrDefault("description", ""))
-                                    .severity((String) b.getOrDefault("severity", "medium"))
-                                    .build());
-                        }
+                // --- PROCESS BUGS ---
+                List<TestResult.BugItem> bugs = new ArrayList<>();
+                List<Map<String, Object>> rawBugs = (List<Map<String, Object>>) body.get("bugs");
+                if (rawBugs != null) {
+                    for (Map<String, Object> b : rawBugs) {
+                        bugs.add(TestResult.BugItem.builder()
+                                .bugId(UUID.randomUUID().toString())
+                                .title((String) b.getOrDefault("title", "Detected Issue"))
+                                .description((String) b.getOrDefault("description", ""))
+                                .severity(((String) b.getOrDefault("severity", "medium")).toLowerCase())
+                                .build());
                     }
+                }
 
-                    // Extract Recommendations
-                    List<Map<String, Object>> recList = (List<Map<String, Object>>) execution.get("recommendations");
-                    if (recList != null) {
-                        for (Map<String, Object> r : recList) {
-                            recommendations.add(TestResult.Recommendation.builder()
-                                    .recommendationId((String) r.getOrDefault("recommendationId", UUID.randomUUID().toString()))
-                                    .title((String) r.getOrDefault("title", "Recommendation"))
-                                    .description((String) r.getOrDefault("description", ""))
-                                    .impact((String) r.getOrDefault("impact", "medium"))
-                                    .category((String) r.getOrDefault("category", "ux"))
-                                    .build());
-                        }
+                // --- PROCESS RECOMMENDATIONS ---
+                List<TestResult.Recommendation> recommendations = new ArrayList<>();
+                List<Map<String, Object>> rawRecs = (List<Map<String, Object>>) body.get("recommendations");
+                if (rawRecs != null) {
+                    for (Map<String, Object> r : rawRecs) {
+                        recommendations.add(TestResult.Recommendation.builder()
+                                .recommendationId(UUID.randomUUID().toString())
+                                .title((String) r.getOrDefault("title", "Suggestion"))
+                                .description((String) r.getOrDefault("description", ""))
+                                .impact(((String) r.getOrDefault("priority", "medium")).toLowerCase())
+                                .category(((String) r.getOrDefault("category", "general")).toLowerCase())
+                                .build());
                     }
+                }
 
-                    // Extract Screenshots
-                    List<Map<String, Object>> shots = (List<Map<String, Object>>) execution.get("screenshots");
-                    if (shots != null) {
-                        Files.createDirectories(SCREENSHOT_DIR);
-                        for (Map<String, Object> shot : shots) {
-                            String filename = (String) shot.getOrDefault("filename", UUID.randomUUID() + ".png");
-                            String b64 = (String) shot.get("b64");
-                            if (b64 != null) {
-                                try {
-                                    byte[] bytes = Base64.getDecoder().decode(b64);
-                                    Files.write(SCREENSHOT_DIR.resolve(filename), bytes);
-                                    screenshots.add(TestResult.Screenshot.builder()
-                                            .url("/uploads/screenshots/" + filename)
-                                            .caption(filename)
-                                            .build());
-                                } catch (Exception e) {
-                                    logs.add("⚠️ Failed to save screenshot: " + filename);
-                                }
+                // --- PROCESS SCREENSHOTS ---
+                List<TestResult.Screenshot> screenshots = new ArrayList<>();
+                List<Map<String, Object>> rawShots = (List<Map<String, Object>>) body.get("screenshots");
+                if (rawShots != null) {
+                    Files.createDirectories(SCREENSHOT_DIR);
+                    for (Map<String, Object> shot : rawShots) {
+                        String rawName = (String) shot.getOrDefault("name", "screenshot");
+
+                        // ✅ FIX: Prepend UUID to make filename unique for EVERY test run
+                        String filename = UUID.randomUUID().toString() + "_" + rawName + ".png";
+
+                        String b64Data = (String) shot.get("data");
+
+                        if (b64Data != null && !b64Data.isEmpty()) {
+                            try {
+                                byte[] bytes = Base64.getDecoder().decode(b64Data);
+                                Path filePath = SCREENSHOT_DIR.resolve(filename);
+                                Files.write(filePath, bytes);
+
+                                screenshots.add(TestResult.Screenshot.builder()
+                                        .url("http://localhost:8080/uploads/screenshots/" + filename)
+                                        .caption((String) shot.getOrDefault("description", "Test Screenshot"))
+                                        .build());
+                            } catch (Exception e) {
+                                logs.add("⚠️ Failed to save screenshot: " + e.getMessage());
                             }
                         }
                     }
-                } else {
-                    logs.add("❌ Flask returned non-2xx: " + response.getStatusCode());
                 }
-            } catch (Exception e) {
-                logs.add("❌ Exception: " + e.getMessage());
-                e.printStackTrace();
+
+                String realScript = (String) body.getOrDefault("script", "// Script not provided by AI Agent");
+
+                // --- SAVE TO DB ---
+                TestResult result = TestResult.builder()
+                        .userId(userId)
+                        .websiteUrl(requestDTO.getUrl())
+                        .status(finalStatus)
+                        .executionTime(LocalDateTime.now())
+                        .createdAt(LocalDateTime.now())
+                        .completedAt(LocalDateTime.now())
+                        .script(realScript)
+                        .duration(duration) // ✅ UPDATE: Using real duration from Python
+                        .browser("firefox")
+                        .logs(logs)
+                        .bugs(bugs)
+                        .recommendations(recommendations)
+                        .screenshots(screenshots)
+                        .build();
+
+                TestResult savedResult = testRepository.save(result);
+
+                pushLiveUpdates();
+                sseService.sendResult(streamId, convertToDTO(savedResult));
+
+            } else {
+                throw new RuntimeException("AI Service returned error status: " + response.getStatusCode());
             }
 
-            // STEP 3: SAVE AND FINISH
-            sseService.sendProgress(streamId, "Saving Report to Database...");
-
-            TestResult result = TestResult.builder()
-                    // 🛑 REMOVED .id(streamId) -> Let DB generate it!
-                    .userId(userId)
-                    .websiteUrl(requestDTO.getUrl())
-                    .status(status)
-                    .executionTime(LocalDateTime.now())
-                    .createdAt(LocalDateTime.now())
-                    .completedAt(LocalDateTime.now())
-                    .script(script)
-                    .duration(duration)
-                    .browser(browser)
-                    .logs(logs)
-                    .bugs(bugs)
-                    .recommendations(recommendations)
-                    .screenshots(screenshots)
-                    .build();
-
-            // ✅ Clean Save (Insert)
-            TestResult savedResult = testRepository.save(result);
-
-            System.out.println("💾 Test saved. Stream ID: " + streamId + " -> DB ID: " + savedResult.getId());
-            pushLiveUpdates();
-
-            // ✅ Send the SAVED result (which has the real DB ID) back to frontend
-            sseService.sendResult(streamId, convertToDTO(savedResult));
-
         } catch (Exception e) {
-            sseService.sendError(streamId, "Critical Error: " + e.getMessage());
             e.printStackTrace();
+            sseService.sendError(streamId, "Critical Error: " + e.getMessage());
+            saveFailedRecord(userId, requestDTO.getUrl(), e.getMessage());
         }
     }
 
+    private void saveFailedRecord(String userId, String url, String errorMsg) {
+        try {
+            TestResult failed = TestResult.builder()
+                    .userId(userId)
+                    .websiteUrl(url)
+                    .status("failed")
+                    .executionTime(LocalDateTime.now())
+                    .createdAt(LocalDateTime.now())
+                    .logs(List.of("Critical Failure: " + errorMsg))
+                    .build();
+            testRepository.save(failed);
+            pushLiveUpdates();
+        } catch (Exception ignored) {}
+    }
+
     private void pushLiveUpdates() {
-        statsService.getStats();
-        statsService.getTestTrends();
-        statsService.getDistribution();
-    }
-
-    private boolean isValidImpact(String impact) {
-        if (impact == null) return false;
-        String lower = impact.toLowerCase();
-        return lower.equals("low") || lower.equals("medium") || lower.equals("high");
-    }
-
-    private boolean isValidCategory(String category) {
-        if (category == null) return false;
-        String lower = category.toLowerCase();
-        return lower.equals("performance") || lower.equals("security") ||
-                lower.equals("accessibility") || lower.equals("seo") || lower.equals("ux");
+        try {
+            statsService.getStats();
+            statsService.getTestTrends();
+            statsService.getDistribution();
+        } catch (Exception e) {
+            System.err.println("⚠️ Failed to push live stats: " + e.getMessage());
+        }
     }
 
     private List<String> extractStringList(Map<String, Object> map, String key) {
@@ -288,10 +226,8 @@ public class TestService {
                 .build();
     }
 
-    // ✅ Updated with Security Check (uses getCurrentUserId)
     public TestResultDTO getTestResult(String id) {
         String currentUserId = getCurrentUserId();
-
         TestResult test = testRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Test not found"));
 
@@ -301,7 +237,6 @@ public class TestService {
         return convertToDTO(test);
     }
 
-    // ✅ Updated with Security Check (uses getCurrentUserId)
     public List<TestResultDTO> getAllTestResults() {
         String currentUserId = getCurrentUserId();
         return testRepository.findByUserIdOrderByCreatedAtDesc(currentUserId)
@@ -310,7 +245,6 @@ public class TestService {
                 .toList();
     }
 
-    // ✅ Updated with Security Check (uses getCurrentUserId)
     public boolean deleteTestResult(String testId) {
         String currentUserId = getCurrentUserId();
         Optional<TestResult> testOpt = testRepository.findById(testId);
@@ -319,6 +253,7 @@ public class TestService {
             TestResult test = testOpt.get();
             if (test.getUserId().equals(currentUserId)) {
                 testRepository.deleteById(testId);
+                pushLiveUpdates();
                 return true;
             }
         }
