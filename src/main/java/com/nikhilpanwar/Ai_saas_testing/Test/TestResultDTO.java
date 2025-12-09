@@ -20,6 +20,7 @@ public class TestResultDTO {
     private String duration; // "5s", "3m 20s"
     private String browser; // "chromium", "firefox", "webkit"
     private String status; // "passed", "failed", "processing"
+    private Integer healthScore;
     private List<String> logs;
     private List<Screenshot> screenshots;
     private String script;

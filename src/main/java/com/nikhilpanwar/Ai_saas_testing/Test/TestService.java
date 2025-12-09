@@ -59,6 +59,15 @@ public class TestService {
                 // ✅ UPDATE: Extract duration sent by Python
                 String duration = (String) body.getOrDefault("duration", "0s");
 
+                // ✅ NEW: Extract Health Score from Summary
+                Integer healthScore = 0;
+                if (body.containsKey("summary")) {
+                    Map<String, Object> summary = (Map<String, Object>) body.get("summary");
+                    if (summary != null && summary.get("health_score") != null) {
+                        healthScore = ((Number) summary.get("health_score")).intValue();
+                    }
+                }
+
                 List<String> logs = extractStringList(body, "logs");
 
                 // --- PROCESS BUGS ---
@@ -133,6 +142,7 @@ public class TestService {
                         .script(realScript)
                         .duration(duration) // ✅ UPDATE: Using real duration from Python
                         .browser("firefox")
+                        .healthScore(healthScore)
                         .logs(logs)
                         .bugs(bugs)
                         .recommendations(recommendations)
@@ -161,6 +171,7 @@ public class TestService {
                     .userId(userId)
                     .websiteUrl(url)
                     .status("failed")
+                    .healthScore(0)
                     .executionTime(LocalDateTime.now())
                     .createdAt(LocalDateTime.now())
                     .logs(List.of("Critical Failure: " + errorMsg))
@@ -201,6 +212,7 @@ public class TestService {
                 .duration(test.getDuration())
                 .browser(test.getBrowser())
                 .status(test.getStatus())
+                .healthScore(test.getHealthScore() != null ? test.getHealthScore() : 0)
                 .logs(test.getLogs() != null ? test.getLogs() : new ArrayList<>())
                 .screenshots(test.getScreenshots() != null
                         ? test.getScreenshots().stream()

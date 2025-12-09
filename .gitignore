@@ -8,6 +8,7 @@ python-service/.env
 python-service/node_modules
 python-service/venv
 
+uploads
 src/main/resources/service-account.json
 
 ### STS ###

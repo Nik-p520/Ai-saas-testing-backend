@@ -33,6 +33,8 @@ public class TestResult {
 
     private String browser; // "chromium", "firefox", "webkit"
 
+    private Integer healthScore;
+
     @Column(nullable = false, length = 20)
     private String status; // "passed", "failed", "processing"
 

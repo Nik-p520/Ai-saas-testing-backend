@@ -120,8 +120,8 @@ class DirectPlaywrightTester:
                 # Setup monitoring
                 page.on('console', lambda msg: self.console_logs.append({
                     'type': msg.type,
-                    'text': msg.text()[:500],
-                    'location': str(msg.location())
+                    'text': msg.text[:500],
+                    'location': str(msg.location)
                 }))
 
                 page.on('pageerror', lambda err: self.errors.append({
@@ -643,6 +643,8 @@ IMPORTANT: Be thorough but honest. If you see real bugs, report them. If the sit
 @app.route("/test-website", methods=["POST"])
 async def test_website():
     """Complete website test with guaranteed screenshots and analysis"""
+    total_start_time = time.time()
+
     try:
         data = request.json or {}
         url = data.get("url")
@@ -676,12 +678,20 @@ async def test_website():
         log_msg(f"Bugs found: {len(analysis.get('genuine_bugs', []))}")
         log_msg(f"Recommendations: {len(analysis.get('recommendations', []))}")
 
+        total_end_time = time.time()
+        total_seconds = total_end_time - total_start_time
+
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        total_duration_str = f"{minutes}m {seconds}s"
+
         # Compile final report
         report = {
             "success": True,
             "url": test_results['url'],
             "title": test_results['title'],
             "timestamp": datetime.utcnow().isoformat() + "Z",
+            "duration": total_duration_str,
             "summary": {
                 "health_score": analysis.get('overall_health_score', 0),
                 "total_bugs": len(analysis.get('genuine_bugs', [])),
@@ -705,7 +715,7 @@ async def test_website():
             # ✅ ADDED: Including script in final response
             "script": test_results.get('script', '// Script unavailable'),
             # ✅ UPDATE 4: Ensure duration is passed in final report
-            "duration": test_results.get('duration', '0s')
+
         }
 
         log_msg(f"\n{'='*70}")
