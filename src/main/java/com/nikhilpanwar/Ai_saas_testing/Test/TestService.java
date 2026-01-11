@@ -21,7 +21,7 @@ public class TestService {
     private final StatsService statsService;
     private final SseService sseService;
 
-    private static final String PYTHON_FULL_AUDIT_URL = "http://localhost:5000/test-website";
+    private static final String PYTHON_FULL_AUDIT_URL = "https://ai-saas-testing-backend-1.onrender.com/test-website";
     private static final Path SCREENSHOT_DIR = Paths.get("uploads/screenshots");
 
     private String getCurrentUserId() {
