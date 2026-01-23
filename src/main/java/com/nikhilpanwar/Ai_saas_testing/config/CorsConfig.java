@@ -16,19 +16,29 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
 
-        // 1. Allow Angular Frontend
-        configuration.setAllowedOrigins(List.of("https://testiee.netlify.app"));
+        // 🔥 IMPORTANT FIX
+        configuration.setAllowedOriginPatterns(List.of(
+                "http://localhost:4200",
+                "http://localhost:5173",
+                "https://testiee.netlify.app"
+        ));
 
-        // 2. Allow Standard Methods
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedMethods(List.of(
+                "GET", "POST", "PUT", "DELETE", "OPTIONS"
+        ));
 
-        // 3. Allow All Headers (Crucial for EventSource 'Last-Event-ID' and Authorization)
         configuration.setAllowedHeaders(List.of("*"));
 
-        // 4. Allow Credentials (Cookies/Auth Headers)
+        // Firebase token / cookies ke liye
         configuration.setAllowCredentials(true);
 
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        configuration.setExposedHeaders(List.of(
+                "Authorization",
+                "Content-Type"
+        ));
+
+        UrlBasedCorsConfigurationSource source =
+                new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
     }
