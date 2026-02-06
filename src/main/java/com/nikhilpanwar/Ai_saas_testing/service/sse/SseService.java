@@ -11,75 +11,66 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class SseService {
 
-    // Thread-safe map to store active connections for each testId
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
 
-    /**
-     * Creates a new connection for a specific test ID.
-     * The Frontend calls this to "subscribe" to updates.
-     */
     public SseEmitter subscribe(String testId) {
-        // Timeout set to 5 minutes (300,000ms) or however long your longest test takes
-        SseEmitter emitter = new SseEmitter(300000L);
-
+        SseEmitter emitter = new SseEmitter(0L); // no timeout
         emitters.put(testId, emitter);
 
         emitter.onCompletion(() -> emitters.remove(testId));
-        emitter.onTimeout(() -> {
-            emitters.remove(testId);
-            // Optionally send a timeout error to client
-        });
-        emitter.onError((e) -> emitters.remove(testId));
+        emitter.onTimeout(() -> emitters.remove(testId));
+        emitter.onError(e -> emitters.remove(testId));
 
         return emitter;
     }
 
-    /**
-     * Call this method from your TestService to update the UI
-     */
-    public void sendProgress(String testId, String statusMessage) {
+    // ✅ PROGRESS → STRING ONLY
+    public void sendProgress(String testId, String message) {
         SseEmitter emitter = emitters.get(testId);
-        if (emitter != null) {
-            try {
-                // We send a structured event: "PROGRESS"
-                emitter.send(SseEmitter.event()
-                        .name("PROGRESS")
-                        .data(statusMessage));
-            } catch (IOException e) {
-                emitters.remove(testId);
-            }
+        if (emitter == null) return;
+
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("PROGRESS")
+                            .data(message)
+            );
+        } catch (IOException e) {
+            emitters.remove(testId);
         }
     }
 
-    /**
-     * Call this when the test is fully done to send the final result
-     */
+    // ✅ RESULT → STRING(JSON)
     public void sendResult(String testId, TestResultDTO result) {
         SseEmitter emitter = emitters.get(testId);
-        if (emitter != null) {
-            try {
-                // Send the final result object
-                emitter.send(SseEmitter.event()
-                        .name("COMPLETED")
-                        .data(result));
-                // Close the connection
-                emitter.complete();
-            } catch (IOException e) {
-                emitters.remove(testId);
-            }
+        if (emitter == null) return;
+
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("COMPLETED")
+                            .data(result) // Jackson auto JSON
+            );
+            emitter.complete();
+        } catch (IOException e) {
+            emitters.remove(testId);
         }
     }
 
-    // Optional: Send an error event
-    public void sendError(String testId, String errorMessage) {
+    // ✅ ERROR → STRING
+    public void sendError(String testId, String error) {
         SseEmitter emitter = emitters.get(testId);
-        if (emitter != null) {
-            try {
-                emitter.send(SseEmitter.event().name("ERROR").data(errorMessage));
-                emitter.complete();
-            } catch (IOException e) {
-                emitters.remove(testId);
-            }
+        if (emitter == null) return;
+
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("ERROR")
+                            .data(error)
+            );
+            emitter.complete();
+        } catch (IOException e) {
+            emitters.remove(testId);
         }
     }
 }

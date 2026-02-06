@@ -1,5 +1,7 @@
 package com.nikhilpanwar.Ai_saas_testing.Test;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nikhilpanwar.Ai_saas_testing.Dashboard.Stats_Cards.StatsService;
 import com.nikhilpanwar.Ai_saas_testing.service.sse.SseService;
 import lombok.RequiredArgsConstructor;
@@ -20,8 +22,13 @@ public class TestService {
     private final RestTemplate restTemplate;
     private final StatsService statsService;
     private final SseService sseService;
+    private final ObjectMapper objectMapper;
 
-    private static final String PYTHON_FULL_AUDIT_URL = "https://ai-saas-testing-backend-1.onrender.com/test-website";
+    private static final String PYTHON_FULL_AUDIT_URL =
+            System.getenv("SPRING_PROFILES_ACTIVE") != null
+                    ? "https://ai-saas-testing-backend-1.onrender.com/test-website"
+                    : "http://localhost:5000/test-website";
+
     private static final Path SCREENSHOT_DIR = Paths.get("uploads/screenshots");
 
     private String getCurrentUserId() {
@@ -37,7 +44,7 @@ public class TestService {
 
         try {
             sseService.sendProgress(streamId, "Connecting to AI Agent...");
-            sseService.sendProgress(streamId, "Launching Cloud Browser & Generating User Journey...");
+            sseService.sendProgress(streamId, "Launching Cloud Browser & Analyzing Site...");
 
             Map<String, Object> request = new HashMap<>();
             request.put("url", requestDTO.getUrl());
@@ -46,116 +53,118 @@ public class TestService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
-            ResponseEntity<Map> response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, Map.class);
+            // Call Flask Service
+            ResponseEntity<String> response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, String.class);
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                sseService.sendProgress(streamId, "AI Analysis Complete. Saving Report...");
-                Map<String, Object> body = response.getBody();
+                sseService.sendProgress(streamId, "AI Analysis Complete. Processing Results...");
 
-                // ✅ UPDATED LOGIC HERE: Status depends ONLY on execution success
-                Boolean success = (Boolean) body.getOrDefault("success", false);
-                String finalStatus = Boolean.TRUE.equals(success) ? "passed" : "failed";
+                // Parse JSON into Map
+                Map<String, Object> body = objectMapper.readValue(response.getBody(), new TypeReference<Map<String, Object>>() {});
 
-                // ✅ UPDATE: Extract duration sent by Python
-                String duration = (String) body.getOrDefault("duration", "0s");
+                // 1. Map basic fields (Flask uses 'test_duration' and 'status')
+                String finalStatus = (String) body.getOrDefault("status", "success");
+                // Flask sends test_duration as a double/number
+                Object durationObj = body.getOrDefault("test_duration", 0);
+                String duration = durationObj.toString() + "s";
 
-                // ✅ NEW: Extract Health Score from Summary
+                // 2. Extract Health Score (Flask: health_scores -> overall)
                 Integer healthScore = 0;
-                if (body.containsKey("summary")) {
-                    Map<String, Object> summary = (Map<String, Object>) body.get("summary");
-                    if (summary != null && summary.get("health_score") != null) {
-                        healthScore = ((Number) summary.get("health_score")).intValue();
+                if (body.containsKey("health_scores")) {
+                    Map<String, Object> healthData = (Map<String, Object>) body.get("health_scores");
+                    if (healthData != null && healthData.get("overall") != null) {
+                        healthScore = ((Number) healthData.get("overall")).intValue();
                     }
                 }
 
-                List<String> logs = extractStringList(body, "logs");
-
-                // --- PROCESS BUGS ---
+                // 3. Process Bugs (Flask: bugs_found)
                 List<TestResult.BugItem> bugs = new ArrayList<>();
-                List<Map<String, Object>> rawBugs = (List<Map<String, Object>>) body.get("bugs");
+                List<Map<String, Object>> rawBugs = (List<Map<String, Object>>) body.get("bugs_found");
                 if (rawBugs != null) {
                     for (Map<String, Object> b : rawBugs) {
                         bugs.add(TestResult.BugItem.builder()
                                 .bugId(UUID.randomUUID().toString())
-                                .title((String) b.getOrDefault("title", "Detected Issue"))
-                                .description((String) b.getOrDefault("description", ""))
+                                .title((String) b.getOrDefault("type", "Detected Issue"))
+                                .description((String) b.getOrDefault("message", ""))
                                 .severity(((String) b.getOrDefault("severity", "medium")).toLowerCase())
                                 .build());
                     }
                 }
 
-                // --- PROCESS RECOMMENDATIONS ---
+                // 4. Process Recommendations (Flask: recommendations -> actions list)
                 List<TestResult.Recommendation> recommendations = new ArrayList<>();
                 List<Map<String, Object>> rawRecs = (List<Map<String, Object>>) body.get("recommendations");
                 if (rawRecs != null) {
                     for (Map<String, Object> r : rawRecs) {
+                        List<String> actions = (List<String>) r.get("actions");
+                        String desc = (actions != null) ? String.join(". ", actions) : "";
+
                         recommendations.add(TestResult.Recommendation.builder()
                                 .recommendationId(UUID.randomUUID().toString())
                                 .title((String) r.getOrDefault("title", "Suggestion"))
-                                .description((String) r.getOrDefault("description", ""))
+                                .description(desc)
                                 .impact(((String) r.getOrDefault("priority", "medium")).toLowerCase())
-                                .category(((String) r.getOrDefault("category", "general")).toLowerCase())
+                                .category("optimization")
                                 .build());
                     }
                 }
 
-                // --- PROCESS SCREENSHOTS ---
+                // 5. Process Screenshots (Flask: screenshots is List<String> of Base64)
                 List<TestResult.Screenshot> screenshots = new ArrayList<>();
-                List<Map<String, Object>> rawShots = (List<Map<String, Object>>) body.get("screenshots");
+                List<String> rawShots = (List<String>) body.get("screenshots");
                 if (rawShots != null) {
                     Files.createDirectories(SCREENSHOT_DIR);
-                    for (Map<String, Object> shot : rawShots) {
-                        String rawName = (String) shot.getOrDefault("name", "screenshot");
-
-                        // ✅ FIX: Prepend UUID to make filename unique for EVERY test run
-                        String filename = UUID.randomUUID().toString() + "_" + rawName + ".png";
-
-                        String b64Data = (String) shot.get("data");
-
+                    for (String b64Data : rawShots) {
                         if (b64Data != null && !b64Data.isEmpty()) {
                             try {
+                                String filename = UUID.randomUUID().toString() + ".png";
                                 byte[] bytes = Base64.getDecoder().decode(b64Data);
-                                Path filePath = SCREENSHOT_DIR.resolve(filename);
-                                Files.write(filePath, bytes);
+                                Files.write(SCREENSHOT_DIR.resolve(filename), bytes);
 
                                 screenshots.add(TestResult.Screenshot.builder()
                                         .url("http://localhost:8080/uploads/screenshots/" + filename)
-                                        .caption((String) shot.getOrDefault("description", "Test Screenshot"))
+                                        .caption("Audit Screenshot")
                                         .build());
                             } catch (Exception e) {
-                                logs.add("⚠️ Failed to save screenshot: " + e.getMessage());
+                                System.err.println("Failed to save screenshot: " + e.getMessage());
                             }
                         }
                     }
                 }
 
-                String realScript = (String) body.getOrDefault("script", "// Script not provided by AI Agent");
+                // 6. Handle AI Summary (Flask: ai_summary -> executive_summary)
+                List<String> logs = new ArrayList<>();
+                if (body.containsKey("ai_summary")) {
+                    Map<String, Object> aiSum = (Map<String, Object>) body.get("ai_summary");
+                    logs.add((String) aiSum.getOrDefault("executive_summary", "Test finished."));
+                }
 
-                // --- SAVE TO DB ---
+                // Save Result to DB
                 TestResult result = TestResult.builder()
                         .userId(userId)
                         .websiteUrl(requestDTO.getUrl())
-                        .status(finalStatus)
+                        .status(finalStatus.equals("success") ? "passed" : "failed")
                         .executionTime(LocalDateTime.now())
                         .createdAt(LocalDateTime.now())
                         .completedAt(LocalDateTime.now())
-                        .script(realScript)
-                        .duration(duration) // ✅ UPDATE: Using real duration from Python
-                        .browser("firefox")
+                        .duration(duration)
+                        .browser("chromium")
                         .healthScore(healthScore)
                         .logs(logs)
                         .bugs(bugs)
                         .recommendations(recommendations)
                         .screenshots(screenshots)
+                        .script("// Playwright automated test complete")
                         .build();
 
                 TestResult savedResult = testRepository.save(result);
-
                 pushLiveUpdates();
+
+                // Send back to Angular via SSE
                 sseService.sendResult(streamId, convertToDTO(savedResult));
 
             } else {
-                throw new RuntimeException("AI Service returned error status: " + response.getStatusCode());
+                throw new RuntimeException("Flask AI Service returned: " + response.getStatusCode());
             }
 
         } catch (Exception e) {
