@@ -4,10 +4,11 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.FirebaseOptions;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
+import jakarta.annotation.PostConstruct; // Check if using Spring Boot 3
 
-import javax.annotation.PostConstruct;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
 @Configuration
 public class FirebaseConfig {
@@ -15,17 +16,24 @@ public class FirebaseConfig {
     @PostConstruct
     public void initialize() {
         try {
-            // Check karte hain ki pehle se initialized to nahi hai
             if (FirebaseApp.getApps().isEmpty()) {
-                FirebaseOptions options = FirebaseOptions.builder()
-                        .setCredentials(GoogleCredentials.fromStream(
-                                new ClassPathResource("service-account.json").getInputStream()))
-                        .build();
-                FirebaseApp.initializeApp(options);
-                System.out.println("✅ Firebase Backend se connect ho gaya!");
+                // Render ke Environment Variables se JSON string uthayega
+                String firebaseConfig = System.getenv("FIREBASE_CONFIG_JSON");
+
+                if (firebaseConfig != null && !firebaseConfig.isEmpty()) {
+                    InputStream serviceAccount = new ByteArrayInputStream(firebaseConfig.getBytes());
+                    FirebaseOptions options = FirebaseOptions.builder()
+                            .setCredentials(GoogleCredentials.fromStream(serviceAccount))
+                            .build();
+
+                    FirebaseApp.initializeApp(options);
+                    System.out.println("✅ Firebase Admin SDK Initialized from Environment Variable!");
+                } else {
+                    System.out.println("⚠️ ERROR: FIREBASE_CONFIG_JSON variable not found on Render!");
+                }
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            System.err.println("❌ Firebase Init Error: " + e.getMessage());
         }
     }
 }
