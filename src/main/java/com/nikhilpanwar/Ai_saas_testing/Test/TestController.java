@@ -57,8 +57,11 @@ public class TestController {
 
     @GetMapping(path = "/stream/{testId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamTestProgress(@PathVariable String testId) {
+        SseEmitter emitter = new SseEmitter(300000L);
         System.out.println("📡 Frontend Connected to Stream: " + testId);
-        return sseService.subscribe(testId);
+        this.sseService.subscribe(testId, emitter);
+
+        return emitter;
     }
 
     @GetMapping("/result/{testId}")

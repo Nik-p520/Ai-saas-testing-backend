@@ -28,6 +28,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers("/api/public/**", "/error").permitAll()
                         .requestMatchers("/ws/**").permitAll()
+                        .requestMatchers("/api/user/photo/**").permitAll()
                         .requestMatchers("/uploads/**").permitAll()
 
                         // ✅ Allow SSE Stream without Auth (EventSource limitation)
