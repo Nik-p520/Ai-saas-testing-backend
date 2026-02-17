@@ -9,6 +9,7 @@ import org.springframework.http.*;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpClientErrorException;
 
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -44,7 +45,6 @@ public class TestService {
 
         try {
             sseService.sendProgress(streamId, "Connecting to AI Agent...");
-            sseService.sendProgress(streamId, "Launching Cloud Browser & Analyzing Site...");
 
             Map<String, Object> request = new HashMap<>();
             request.put("url", requestDTO.getUrl());
@@ -53,22 +53,34 @@ public class TestService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
-            // Call Flask Service
-            ResponseEntity<String> response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, String.class);
+            // ✅ RETRY LOGIC FOR 429 ERRORS (FIXES THE CRASH)
+            ResponseEntity<String> response = null;
+            int maxRetries = 2;
+            int attempt = 0;
 
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+            while (attempt <= maxRetries) {
+                try {
+                    sseService.sendProgress(streamId, "Launching Cloud Browser & Analyzing Site...");
+                    response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, String.class);
+                    break; // Success! Exit loop
+                } catch (HttpClientErrorException.TooManyRequests e) {
+                    attempt++;
+                    if (attempt > maxRetries) throw e;
+
+                    sseService.sendProgress(streamId, "⚠️ AI Service busy (Rate Limit). Retrying in 5s... (Attempt " + attempt + ")");
+                    Thread.sleep(5000); // Wait 5 seconds before retrying
+                }
+            }
+
+            if (response != null && response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 sseService.sendProgress(streamId, "AI Analysis Complete. Processing Results...");
 
-                // Parse JSON into Map
                 Map<String, Object> body = objectMapper.readValue(response.getBody(), new TypeReference<Map<String, Object>>() {});
 
-                // 1. Map basic fields (Flask uses 'test_duration' and 'status')
                 String finalStatus = (String) body.getOrDefault("status", "success");
-                // Flask sends test_duration as a double/number
                 Object durationObj = body.getOrDefault("test_duration", 0);
                 String duration = durationObj.toString() + "s";
 
-                // 2. Extract Health Score (Flask: health_scores -> overall)
                 Integer healthScore = 0;
                 if (body.containsKey("health_scores")) {
                     Map<String, Object> healthData = (Map<String, Object>) body.get("health_scores");
@@ -77,7 +89,6 @@ public class TestService {
                     }
                 }
 
-                // 3. Process Bugs (Flask: bugs_found)
                 List<TestResult.BugItem> bugs = new ArrayList<>();
                 List<Map<String, Object>> rawBugs = (List<Map<String, Object>>) body.get("bugs_found");
                 if (rawBugs != null) {
@@ -91,7 +102,6 @@ public class TestService {
                     }
                 }
 
-                // 4. Process Recommendations (Flask: recommendations -> actions list)
                 List<TestResult.Recommendation> recommendations = new ArrayList<>();
                 List<Map<String, Object>> rawRecs = (List<Map<String, Object>>) body.get("recommendations");
                 if (rawRecs != null) {
@@ -109,7 +119,6 @@ public class TestService {
                     }
                 }
 
-                // 5. Process Screenshots (Flask: screenshots is List<String> of Base64)
                 List<TestResult.Screenshot> screenshots = new ArrayList<>();
                 List<String> rawShots = (List<String>) body.get("screenshots");
                 if (rawShots != null) {
@@ -132,14 +141,12 @@ public class TestService {
                     }
                 }
 
-                // 6. Handle AI Summary (Flask: ai_summary -> executive_summary)
                 List<String> logs = new ArrayList<>();
                 if (body.containsKey("ai_summary")) {
                     Map<String, Object> aiSum = (Map<String, Object>) body.get("ai_summary");
                     logs.add((String) aiSum.getOrDefault("executive_summary", "Test finished."));
                 }
 
-                // Save Result to DB
                 TestResult result = TestResult.builder()
                         .userId(userId)
                         .websiteUrl(requestDTO.getUrl())
@@ -159,12 +166,10 @@ public class TestService {
 
                 TestResult savedResult = testRepository.save(result);
                 pushLiveUpdates();
-
-                // Send back to Angular via SSE
                 sseService.sendResult(streamId, convertToDTO(savedResult));
 
             } else {
-                throw new RuntimeException("Flask AI Service returned: " + response.getStatusCode());
+                throw new RuntimeException("Flask AI Service failed after connection.");
             }
 
         } catch (Exception e) {
@@ -198,19 +203,6 @@ public class TestService {
         } catch (Exception e) {
             System.err.println("⚠️ Failed to push live stats: " + e.getMessage());
         }
-    }
-
-    private List<String> extractStringList(Map<String, Object> map, String key) {
-        try {
-            Object val = map.get(key);
-            if (val instanceof List<?>) {
-                List<?> list = (List<?>) val;
-                List<String> result = new ArrayList<>();
-                for (Object o : list) result.add(String.valueOf(o));
-                return result;
-            }
-        } catch (Exception ignored) {}
-        return new ArrayList<>();
     }
 
     private TestResultDTO convertToDTO(TestResult test) {

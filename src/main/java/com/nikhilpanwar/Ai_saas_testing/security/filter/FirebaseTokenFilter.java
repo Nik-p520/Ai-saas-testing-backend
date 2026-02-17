@@ -29,30 +29,32 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
 
-        // 🛑 FIX 1: Agar request OPTIONS hai (Pre-flight check), to usse jaane do.
-        // Usme Token kabhi nahi hota, isliye check mat karo.
         if (request.getMethod().equalsIgnoreCase("OPTIONS")) {
             chain.doFilter(request, response);
             return;
         }
 
         String header = request.getHeader("Authorization");
+        String token = null;
 
-        System.out.println("🔍 Request: " + request.getMethod() + " " + request.getRequestURI());
-
+        // 1. Try to get token from Header
         if (header != null && header.startsWith("Bearer ")) {
-            String token = header.substring(7);
+            token = header.substring(7);
+        }
+        // 2. BACKUP: Try to get token from Query Parameter (For SSE Streams)
+        else if (request.getParameter("token") != null) {
+            token = request.getParameter("token");
+        }
+
+        if (token != null) {
             try {
                 FirebaseToken decodedToken = FirebaseAuth.getInstance().verifyIdToken(token);
                 String uid = decodedToken.getUid();
                 String email = decodedToken.getEmail();
 
-                System.out.println("✅ Token Valid for User: " + email);
-
                 if (userRepository.findByFirebaseUid(uid).isEmpty()) {
                     User newUser = new User(uid, email, decodedToken.getName());
                     userRepository.save(newUser);
-                    System.out.println("🆕 New User Saved to DB");
                 }
 
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
@@ -64,9 +66,9 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
             } catch (Exception e) {
                 System.out.println("❌ Auth Error: " + e.getMessage());
             }
-        } else {
-            // Sirf tab print karo jab ye OPTIONS na ho (jo humne upar handle kar liya)
-            System.out.println("⚠️ No Bearer Token Found in Header for " + request.getRequestURI());
+        } else if (!request.getRequestURI().contains("/stream/")) {
+            // Only log warning if it's NOT a stream request
+            System.out.println("⚠️ No Token Found for " + request.getRequestURI());
         }
 
         chain.doFilter(request, response);
