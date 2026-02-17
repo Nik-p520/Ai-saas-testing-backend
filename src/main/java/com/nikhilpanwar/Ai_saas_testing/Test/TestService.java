@@ -51,6 +51,7 @@ public class TestService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
             // ✅ RETRY LOGIC FOR 429 ERRORS (FIXES THE CRASH)
