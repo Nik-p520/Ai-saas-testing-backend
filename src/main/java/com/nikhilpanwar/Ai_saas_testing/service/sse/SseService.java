@@ -16,32 +16,40 @@ public class SseService {
 
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
 
+    // ✅ ONE shared thread pool for all heartbeats (Prevents Memory Leaks)
+    private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
+
     /**
      * Subscribes a client to a test stream.
-     * Receives the emitter created in the Controller to maintain the connection.
      */
     public void subscribe(String testId, SseEmitter emitter) {
-        // Store the emitter
         emitters.put(testId, emitter);
 
         // Cleanup logic
-        emitter.onCompletion(() -> emitters.remove(testId));
-        emitter.onTimeout(() -> emitters.remove(testId));
-        emitter.onError(e -> emitters.remove(testId));
+        emitter.onCompletion(() -> unsubscribe(testId));
+        emitter.onTimeout(() -> unsubscribe(testId));
+        emitter.onError(e -> unsubscribe(testId));
 
-        // ✅ HEARTBEAT: Sends a 'ping' every 15 seconds.
-        // This prevents Render/Browsers from closing the connection due to inactivity.
-        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleAtFixedRate(() -> {
+        // ✅ Use the shared executor to send heartbeats every 15 seconds
+        // This keeps the Render/Proxy connection alive.
+        heartbeatExecutor.scheduleAtFixedRate(() -> {
             try {
-                emitter.send(SseEmitter.event()
-                        .name("ping")
-                        .comment("keep-alive"));
+                SseEmitter activeEmitter = emitters.get(testId);
+                if (activeEmitter != null) {
+                    activeEmitter.send(SseEmitter.event()
+                            .name("ping")
+                            .comment("keep-alive"));
+                }
             } catch (Exception e) {
-                emitters.remove(testId);
-                executor.shutdown();
+                unsubscribe(testId);
             }
         }, 15, 15, TimeUnit.SECONDS);
+    }
+
+    // ✅ Make this PUBLIC so your Controller can call it if needed
+    public void unsubscribe(String testId) {
+        emitters.remove(testId);
+        System.out.println("🧹 Cleaned up connection for: " + testId);
     }
 
     // ✅ PROGRESS Updates
@@ -54,7 +62,7 @@ public class SseService {
                     .name("PROGRESS")
                     .data(message));
         } catch (IOException e) {
-            emitters.remove(testId);
+            unsubscribe(testId);
         }
     }
 
@@ -67,9 +75,9 @@ public class SseService {
             emitter.send(SseEmitter.event()
                     .name("COMPLETED")
                     .data(result));
-            emitter.complete(); // Close connection after success
+            emitter.complete(); // Successfully close connection
         } catch (IOException e) {
-            emitters.remove(testId);
+            unsubscribe(testId);
         }
     }
 
@@ -84,7 +92,7 @@ public class SseService {
                     .data(error));
             emitter.complete(); // Close connection after error
         } catch (IOException e) {
-            emitters.remove(testId);
+            unsubscribe(testId);
         }
     }
 }

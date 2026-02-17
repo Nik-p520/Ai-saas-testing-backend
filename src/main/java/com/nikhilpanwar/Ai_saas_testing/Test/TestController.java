@@ -7,6 +7,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -57,9 +58,21 @@ public class TestController {
 
     @GetMapping(path = "/stream/{testId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamTestProgress(@PathVariable String testId) {
+        // 5-minute timeout
         SseEmitter emitter = new SseEmitter(300000L);
-        System.out.println("📡 Frontend Connected to Stream: " + testId);
+
+        // Register with service
         this.sseService.subscribe(testId, emitter);
+
+        // Wrap in try-catch to fix the "Unhandled IOException" error
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("INIT")
+                    .data("Connected"));
+        } catch (IOException e) {
+            this.sseService.unsubscribe(testId);
+            emitter.completeWithError(e);
+        }
 
         return emitter;
     }
