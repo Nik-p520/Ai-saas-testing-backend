@@ -607,102 +607,72 @@ class PlaywrightTester:
         network_logs = []
         errors = []
 
+        # Initialize browser outside try to access it in 'finally'
+        browser = None
+
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
                     headless=True,
                     args=[
-                        '--disable-dev-shm-usage', # ✅ Uses /tmp instead of /dev/shm (Crucial for Docker)
-                        '--no-sandbox',            # ✅ Required for most Linux environments
+                        '--disable-dev-shm-usage',
+                        '--no-sandbox',
                         '--disable-setuid-sandbox',
-                        '--disable-gpu',           # ✅ Saves ~100MB of RAM
-                        '--single-process',        # ✅ Forces all tabs into one process
-                        '--no-zygote'              # ✅ Disables the helper process to save more RAM
+                        '--disable-gpu',
+                        '--single-process',
+                        '--no-zygote'
                     ]
                 )
+
+                # Use a smaller footprint context
                 context = await browser.new_context(
-                    viewport={"width": 1920, "height": 1080}
+                    viewport={"width": 1280, "height": 720} # Reduced from 1080p to save RAM
                 )
                 page = await context.new_page()
 
-                # Set up event listeners
-                page.on("console", lambda msg: console_logs.append({
-                    "type": msg.type,
-                    "text": msg.text[:500]
-                }))
-
-                page.on("pageerror", lambda error: errors.append({
-                    "error": str(error)[:500]
-                }))
-
+                # Event listeners
+                page.on("console", lambda msg: console_logs.append({"type": msg.type, "text": msg.text[:500]}))
+                page.on("pageerror", lambda error: errors.append({"error": str(error)[:500]}))
                 page.on("response", lambda response: network_logs.append({
-                    "url": response.url,
-                    "status": response.status,
-                    "method": response.request.method
+                    "url": response.url, "status": response.status, "method": response.request.method
                 }))
 
-                # Navigate to page
-                await page.goto(url, wait_until="networkidle", timeout=60000)
-                await page.wait_for_timeout(2000)
+                # Navigate
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(3000)
 
-                load_time = round(time.time() - start_time, 2)
+                # Page analysis
+                page_data = await page.evaluate("""() => {
+                    const imgs = Array.from(document.querySelectorAll('img'));
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    const inputs = Array.from(document.querySelectorAll('input, textarea, select'));
+                    return {
+                        buttons: btns.length,
+                        empty_buttons: btns.filter(b => !b.textContent.trim() && !b.getAttribute('aria-label')).length,
+                        links: document.querySelectorAll('a[href]').length,
+                        images: imgs.length,
+                        broken_images: imgs.filter(i => !i.complete || i.naturalHeight === 0).length,
+                        has_title: !!document.title,
+                        title: document.title || "",
+                        has_meta_description: !!document.querySelector('meta[name="description"]'),
+                        has_h1: !!document.querySelector('h1')
+                    };
+                }""")
 
-                # Take screenshot
-                screenshot_bytes = await page.screenshot(full_page=True)
-                screenshots.append(base64.b64encode(screenshot_bytes).decode("utf-8"))
-
-                # Collect page data
-                page_data = await page.evaluate("""
-    () => {
-        const imgs = Array.from(document.querySelectorAll('img'));
-        const btns = Array.from(document.querySelectorAll('button'));
-        const inputs = Array.from(document.querySelectorAll('input, textarea, select'));
-        
-        return {
-            buttons: btns.length,
-            empty_buttons: btns.filter(b => 
-                !b.textContent.trim() && 
-                !b.getAttribute('aria-label') && 
-                !b.title
-            ).length,
-            links: document.querySelectorAll('a[href]').length,
-            forms: document.querySelectorAll('form').length,
-            images: imgs.length,
-            broken_images: imgs.filter(i => 
-                !i.complete || i.naturalHeight === 0
-            ).length,
-            images_without_alt: imgs.filter(i => !i.hasAttribute("alt") || !i.alt).length,
-            inputs: inputs.length,
-            unlabeled_inputs: inputs.filter(i => 
-                (!i.labels || i.labels.length === 0) && 
-                !i.getAttribute('aria-label') &&
-                !i.title
-            ).length,
-            has_title: !!document.title,
-            title: document.title || "",
-            has_meta_description: !!document.querySelector('meta[name="description"]'),
-            has_h1: !!document.querySelector('h1'),
-            h1_count: document.querySelectorAll('h1').length
-        };
-    }
-""")
-
-
-                # Get performance metrics
-                performance_metrics = await page.evaluate("""
-                    () => {
-                        const p = performance.timing;
-                        return {
-                            ttfb: p.responseStart - p.requestStart,
-                            dom_content_loaded: p.domContentLoadedEventEnd - p.navigationStart,
-                            load_complete: p.loadEventEnd - p.navigationStart
-                        };
-                    }
-                """)
+                performance_metrics = await page.evaluate("""() => {
+                    const p = performance.timing;
+                    return {
+                        ttfb: p.responseStart - p.requestStart,
+                        dom_content_loaded: p.domContentLoadedEventEnd - p.navigationStart
+                    };
+                }""")
 
                 title = await page.title()
+                load_time = round(time.time() - start_time, 2)
 
-                await browser.close()
+                # Take screenshot last (heavy memory usage)
+                screenshot_bytes = await page.screenshot(full_page=False) # Partial page saves RAM
+                screenshots.append(base64.b64encode(screenshot_bytes).decode("utf-8"))
 
                 logger.info(f"✅ Test completed in {load_time}s")
 
@@ -720,18 +690,16 @@ class PlaywrightTester:
                 }
 
         except PlaywrightTimeoutError:
-            logger.error("Timeout loading page")
-            return {
-                "success": False,
-                "error": "Timeout: Page took too long to load (>60s)"
-            }
+            logger.error(f"❌ Timeout for {url}")
+            return {"success": False, "error": "Timeout: Page took too long to load (>60s)"}
         except Exception as e:
-            logger.error(f"Test failed: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
+            logger.error(f"❌ Test failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+        finally:
+            # ✅ MANDATORY: Close browser regardless of success or failure
+            if browser:
+                await browser.close()
+                logger.info("🧹 Browser closed and memory freed.")
 
 
 # =============================================================================
@@ -808,7 +776,9 @@ Focus only on actual detected issues. Be concise and actionable."""
 
 @app.route("/test-website", methods=["POST"])
 async def test_website():
+    os.system("pkill -f chromium || true")
     logger.info("📥 Python Service: Received request from Java backend")
+
     """Main testing endpoint"""
     try:
         data = request.get_json()
