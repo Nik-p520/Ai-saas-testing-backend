@@ -776,7 +776,9 @@ Focus only on actual detected issues. Be concise and actionable."""
 
 @app.route("/test-website", methods=["POST"])
 async def test_website():
-    os.system("pkill -f chromium || true")
+    process = await asyncio.create_subprocess_shell("pkill -f chromium || true")
+    await process.wait()
+    logger.info("🛡️ Memory Guard: Cleared any old Chromium processes.")
     logger.info("📥 Python Service: Received request from Java backend")
 
     """Main testing endpoint"""
