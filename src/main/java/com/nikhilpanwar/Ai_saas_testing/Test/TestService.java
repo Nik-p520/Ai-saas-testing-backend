@@ -76,7 +76,7 @@ public class TestService {
                     if (attempt > maxRetries) throw e;
 
                     sseService.sendProgress(streamId, "⚠️ AI Service busy (Rate Limit). Retrying in 5s... (Attempt " + attempt + ")");
-                    Thread.sleep(5000); // Wait 5 seconds before retrying
+                    Thread.sleep(10000); // Wait 10 seconds before retrying
                 }
             }
 
