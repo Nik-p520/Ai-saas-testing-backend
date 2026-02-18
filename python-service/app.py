@@ -609,7 +609,17 @@ class PlaywrightTester:
 
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--disable-dev-shm-usage', # ✅ Uses /tmp instead of /dev/shm (Crucial for Docker)
+                        '--no-sandbox',            # ✅ Required for most Linux environments
+                        '--disable-setuid-sandbox',
+                        '--disable-gpu',           # ✅ Saves ~100MB of RAM
+                        '--single-process',        # ✅ Forces all tabs into one process
+                        '--no-zygote'              # ✅ Disables the helper process to save more RAM
+                    ]
+                )
                 context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080}
                 )
@@ -798,6 +808,7 @@ Focus only on actual detected issues. Be concise and actionable."""
 
 @app.route("/test-website", methods=["POST"])
 async def test_website():
+    logger.info("📥 Python Service: Received request from Java backend")
     """Main testing endpoint"""
     try:
         data = request.get_json()
