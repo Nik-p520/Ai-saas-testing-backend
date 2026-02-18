@@ -672,7 +672,10 @@ class PlaywrightTester:
 
                 # Take screenshot last (heavy memory usage)
                 screenshot_bytes = await page.screenshot(full_page=False) # Partial page saves RAM
-                screenshots.append(base64.b64encode(screenshot_bytes).decode("utf-8"))
+                # Create a proper Data URL for the browser to read
+                encoded_string = base64.b64encode(screenshot_bytes).decode("utf-8")
+                data_url = f"data:image/png;base64,{encoded_string}"
+                screenshots.append(data_url)
 
                 logger.info(f"✅ Test completed in {load_time}s")
 
