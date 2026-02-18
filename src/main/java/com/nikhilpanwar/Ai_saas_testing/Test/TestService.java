@@ -51,10 +51,11 @@ public class TestService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            // ✅ Headers to prevent Cloudflare from flagging Render as a bot
+            headers.set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            headers.set("Accept", "application/json");
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(request, headers);
 
-            // ✅ RETRY LOGIC FOR 429 ERRORS (FIXES THE CRASH)
             ResponseEntity<String> response = null;
             int maxRetries = 2;
             int attempt = 0;
@@ -63,8 +64,14 @@ public class TestService {
                 try {
                     sseService.sendProgress(streamId, "Launching Cloud Browser & Analyzing Site...");
                     response = restTemplate.postForEntity(PYTHON_FULL_AUDIT_URL, entity, String.class);
+
+                    // ✅ Check if the response is actually valid JSON and not a Cloudflare HTML page
+                    if (response.getBody() != null && response.getBody().trim().startsWith("<!DOCTYPE html>")) {
+                        throw new HttpClientErrorException(HttpStatus.TOO_MANY_REQUESTS, "Received HTML instead of JSON");
+                    }
+
                     break; // Success! Exit loop
-                } catch (HttpClientErrorException.TooManyRequests e) {
+                } catch (HttpClientErrorException e) {
                     attempt++;
                     if (attempt > maxRetries) throw e;
 
@@ -76,7 +83,14 @@ public class TestService {
             if (response != null && response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 sseService.sendProgress(streamId, "AI Analysis Complete. Processing Results...");
 
-                Map<String, Object> body = objectMapper.readValue(response.getBody(), new TypeReference<Map<String, Object>>() {});
+                // ✅ Guard parsing logic
+                Map<String, Object> body;
+                try {
+                    body = objectMapper.readValue(response.getBody(), new TypeReference<Map<String, Object>>() {});
+                } catch (Exception parseError) {
+                    System.err.println("❌ Parsing failed: " + parseError.getMessage());
+                    throw new RuntimeException("AI Service returned invalid data format.");
+                }
 
                 String finalStatus = (String) body.getOrDefault("status", "success");
                 Object durationObj = body.getOrDefault("test_duration", 0);
@@ -90,6 +104,7 @@ public class TestService {
                     }
                 }
 
+                // ... [Bugs, Recommendations, and Screenshots logic remains the same] ...
                 List<TestResult.BugItem> bugs = new ArrayList<>();
                 List<Map<String, Object>> rawBugs = (List<Map<String, Object>>) body.get("bugs_found");
                 if (rawBugs != null) {
@@ -109,7 +124,6 @@ public class TestService {
                     for (Map<String, Object> r : rawRecs) {
                         List<String> actions = (List<String>) r.get("actions");
                         String desc = (actions != null) ? String.join(". ", actions) : "";
-
                         recommendations.add(TestResult.Recommendation.builder()
                                 .recommendationId(UUID.randomUUID().toString())
                                 .title((String) r.getOrDefault("title", "Suggestion"))
@@ -130,9 +144,8 @@ public class TestService {
                                 String filename = UUID.randomUUID().toString() + ".png";
                                 byte[] bytes = Base64.getDecoder().decode(b64Data);
                                 Files.write(SCREENSHOT_DIR.resolve(filename), bytes);
-
                                 screenshots.add(TestResult.Screenshot.builder()
-                                        .url("http://localhost:8080/uploads/screenshots/" + filename)
+                                        .url("https://your-backend-url.com/uploads/screenshots/" + filename)
                                         .caption("Audit Screenshot")
                                         .build());
                             } catch (Exception e) {
