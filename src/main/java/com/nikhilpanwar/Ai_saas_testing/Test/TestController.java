@@ -93,4 +93,9 @@ public class TestController {
                 ? ResponseEntity.noContent().build()
                 : ResponseEntity.notFound().build();
     }
+
+    @GetMapping("/health")
+    public String health() {
+        return "OK";
+    }
 }

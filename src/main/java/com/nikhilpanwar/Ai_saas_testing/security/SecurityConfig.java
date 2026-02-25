@@ -33,7 +33,7 @@ public class SecurityConfig {
 
                         // ✅ Allow SSE Stream without Auth (EventSource limitation)
                         .requestMatchers("/api/test/stream/**").permitAll()
-
+                        .requestMatchers("/api/test/health/**").permitAll()
                         .requestMatchers("/api/user/**").authenticated()
                         .requestMatchers("/api/dashboard/**").authenticated()
                         .requestMatchers("/api/test/**").authenticated()

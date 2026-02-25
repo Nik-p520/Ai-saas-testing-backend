@@ -29,6 +29,13 @@ public class FirebaseTokenFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
 
+        String path = request.getRequestURI();
+
+        if (path.equals("/api/test/health")) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         if (request.getMethod().equalsIgnoreCase("OPTIONS")) {
             chain.doFilter(request, response);
             return;
